@@ -2,6 +2,7 @@
 const express = require('express');
 const supabase = require('../db/supabase');
 const { upload, uploadToSupabase, removeFromSupabase } = require('../utils/upload');
+const { sendPatientConfirmation, sendTestEmail } = require('../utils/mailer');
 const { pick, clean, isEmail, isUuid, isDate, isTime, dbFail, validateId } = require('../utils/http');
 
 const router = express.Router();
@@ -128,6 +129,21 @@ router.put('/doctors/:id', async (req, res) => {
   res.json(data);
 });
 
+// Sends a test message to the doctor's saved email, to check the Brevo setup.
+router.post('/doctors/:id/test-email', async (req, res) => {
+  const { data: doctor, error } = await supabase.from('doctors').select('full_name, email').eq('id', req.params.id).maybeSingle();
+  if (error) return dbFail(res, error);
+  if (!doctor) return res.status(404).json({ error: 'Doctor not found.' });
+  if (!doctor.email) return res.status(400).json({ error: 'This doctor has no email address. Add one first.' });
+  try {
+    await sendTestEmail(doctor.email);
+    res.json({ ok: true, to: doctor.email });
+  } catch (e) {
+    console.error('[mail] test email failed:', e.message);
+    res.status(502).json({ error: String(e.message).slice(0, 300) });
+  }
+});
+
 router.delete('/doctors/:id', async (req, res) => {
   const { error } = await supabase.from('doctors').delete().eq('id', req.params.id);
   if (error) return dbFail(res, error);
@@ -167,12 +183,36 @@ router.put('/appointments/:id', async (req, res) => {
   if (b.appointment_time !== undefined && !isTime(String(b.appointment_time).slice(0, 5))) return res.status(400).json({ error: 'Invalid time.' });
   if (b.reason !== undefined) b.reason = clean(b.reason, 1000);
   b.updated_at = new Date().toISOString();
-  const { data, error } = await supabase.from('appointments').update(b).eq('id', req.params.id).select().single();
+
+  // Remember what it was, so we only email the patient on a real change to "confirmed".
+  const { data: before } = await supabase.from('appointments').select('status').eq('id', req.params.id).maybeSingle();
+
+  const { data, error } = await supabase
+    .from('appointments')
+    .update(b)
+    .eq('id', req.params.id)
+    .select('*, doctors(full_name, title)')
+    .single();
   if (error) {
     if (error.code === '23505') return res.status(409).json({ error: 'That doctor already has an appointment at that time.' });
     return dbFail(res, error);
   }
-  res.json(data);
+
+  const result = { ...data };
+  if (b.status === 'confirmed' && before && before.status !== 'confirmed') {
+    try {
+      await sendPatientConfirmation({ appointment: data, doctor: data.doctors });
+      result.patientEmailed = true;
+      // Best effort: older databases may not have this column yet.
+      const { error: markErr } = await supabase.from('appointments').update({ patient_notified_at: new Date().toISOString() }).eq('id', data.id);
+      if (markErr) console.error('[mail] could not record patient_notified_at:', markErr.message);
+    } catch (e) {
+      console.error(`[mail] Patient confirmation failed for appointment ${data.id}:`, e.message);
+      result.patientEmailed = false;
+      result.patientEmailError = String(e.message).slice(0, 220);
+    }
+  }
+  res.json(result);
 });
 
 router.delete('/appointments/:id', async (req, res) => {

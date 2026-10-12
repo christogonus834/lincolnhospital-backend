@@ -90,6 +90,7 @@ create table if not exists appointments (
   reason text,
   status text not null default 'pending' check (status in ('pending','confirmed','cancelled','completed')),
   doctor_notified_at timestamptz,  -- set when the Brevo email to the doctor was accepted
+  patient_notified_at timestamptz, -- set when the patient was emailed that the booking is confirmed
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );

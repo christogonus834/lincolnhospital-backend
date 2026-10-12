@@ -187,7 +187,7 @@ router.post('/appointments', bookingLimiter, async (req, res) => {
       reference_id: appointment.id,
       title: `Doctor not emailed: ${doctor.full_name}`,
       body: doctor.email
-        ? `The email alert for ${patientName}'s booking could not be sent. Please tell the doctor directly.`
+        ? `The email alert for ${patientName}'s booking could not be sent (${String(e.message).slice(0, 220)}). Please tell the doctor directly.`
         : `${doctor.full_name} has no email address on file. Add one under Doctors so alerts can be sent.`,
     });
   }

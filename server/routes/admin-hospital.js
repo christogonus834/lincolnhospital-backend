@@ -2,7 +2,7 @@
 const express = require('express');
 const supabase = require('../db/supabase');
 const { upload, uploadToSupabase, removeFromSupabase } = require('../utils/upload');
-const { sendPatientConfirmation, sendTestEmail } = require('../utils/mailer');
+const { sendPatientConfirmation, sendTestEmail, checkEmailSetup } = require('../utils/mailer');
 const { pick, clean, isEmail, isUuid, isDate, isTime, dbFail, validateId } = require('../utils/http');
 
 const router = express.Router();
@@ -127,6 +127,16 @@ router.put('/doctors/:id', async (req, res) => {
   const { data, error } = await supabase.from('doctors').update(out).eq('id', req.params.id).select('*, departments(name)').single();
   if (error) return dbFail(res, error);
   res.json(data);
+});
+
+// Checks the whole Brevo setup and says which step is broken.
+router.get('/email-check', async (req, res) => {
+  try {
+    res.json({ checks: await checkEmailSetup() });
+  } catch (e) {
+    console.error('[mail] email-check failed:', e.message);
+    res.status(500).json({ error: 'Could not run the email check.' });
+  }
 });
 
 // Sends a test message to the doctor's saved email, to check the Brevo setup.

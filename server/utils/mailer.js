@@ -28,27 +28,20 @@ function esc(value) {
 // Strip CR/LF so a patient-supplied value can never inject mail headers.
 const oneLine = (v) => String(v ?? '').replace(/[\r\n]+/g, ' ').trim();
 
-function brevoRequest(payload) {
+// One call to the Brevo API. Rejects with Brevo's own explanation on failure.
+function brevoCall(method, path, payload) {
   return new Promise((resolve, reject) => {
-    const apiKey = process.env.BREVO_API_KEY;
+    const apiKey = (process.env.BREVO_API_KEY || '').trim();
     if (!apiKey) return reject(new Error('BREVO_API_KEY is not set on the server.'));
-    if (!process.env.MAIL_FROM_EMAIL) return reject(new Error('MAIL_FROM_EMAIL is not set on the server.'));
 
-    const body = JSON.stringify(payload);
+    const body = payload ? JSON.stringify(payload) : null;
+    const headers = { 'api-key': apiKey, Accept: 'application/json' };
+    if (body) {
+      headers['Content-Type'] = 'application/json';
+      headers['Content-Length'] = Buffer.byteLength(body);
+    }
     const req = https.request(
-      {
-        hostname: 'api.brevo.com',
-        port: 443,
-        path: '/v3/smtp/email',
-        method: 'POST',
-        timeout: 10000,
-        headers: {
-          'api-key': apiKey,
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          'Content-Length': Buffer.byteLength(body),
-        },
-      },
+      { hostname: 'api.brevo.com', port: 443, path, method, timeout: 10000, headers },
       (res) => {
         let data = '';
         res.on('data', (c) => { data += c; });
@@ -65,14 +58,19 @@ function brevoRequest(payload) {
     );
     req.on('timeout', () => req.destroy(new Error('Brevo did not respond in time.')));
     req.on('error', reject);
-    req.write(body);
+    if (body) req.write(body);
     req.end();
   });
 }
 
+function brevoRequest(payload) {
+  if (!(process.env.MAIL_FROM_EMAIL || '').trim()) return Promise.reject(new Error('MAIL_FROM_EMAIL is not set on the server.'));
+  return brevoCall('POST', '/v3/smtp/email', payload);
+}
+
 function sendMail({ to, toName, subject, html, text, replyTo, cc, tags }) {
   const payload = {
-    sender: { name: hospitalName(), email: process.env.MAIL_FROM_EMAIL },
+    sender: { name: hospitalName(), email: process.env.MAIL_FROM_EMAIL.trim() },
     to: [{ email: to, ...(toName ? { name: oneLine(toName) } : {}) }],
     subject: oneLine(subject).slice(0, 200),
     htmlContent: html,
@@ -204,4 +202,53 @@ async function sendTestEmail(to) {
   });
 }
 
-module.exports = { sendDoctorAppointmentAlert, sendPatientConfirmation, sendTestEmail, esc };
+// ---------------------------------------------------------------------
+// 4) Admin "Check email setup": walks through everything that can go wrong
+// ---------------------------------------------------------------------
+async function checkEmailSetup() {
+  const checks = [];
+  const add = (name, ok, detail) => checks.push({ name, ok, detail });
+
+  const key = (process.env.BREVO_API_KEY || '').trim();
+  const from = (process.env.MAIL_FROM_EMAIL || '').trim();
+  add('BREVO_API_KEY is set on the server', !!key, key ? (key.startsWith('xkeysib-') ? 'Looks like a valid Brevo API key.' : 'It does not start with "xkeysib-". Make sure you pasted an API key (not an SMTP key).') : 'Add it in Render > Environment.');
+  add('MAIL_FROM_EMAIL is set on the server', !!from, from ? `Sending as ${from}` : 'Add the sender address you verified in Brevo.');
+  if (!key) return checks;
+
+  let account;
+  try {
+    account = await brevoCall('GET', '/v3/account');
+    add('Brevo accepts the API key', true, `Connected to the Brevo account ${account.email || ''}`.trim());
+  } catch (e) {
+    add('Brevo accepts the API key', false, e.message + (/ip/i.test(e.message) ? ' Fix: in Brevo open Security > Authorised IPs and turn off IP blocking (Render\'s address keeps changing).' : ''));
+    return checks;
+  }
+
+  if (account.relay && account.relay.enabled === false) {
+    add('Email sending is activated on the Brevo account', false, 'Brevo reports the transactional email service as switched off for this account. If sending still fails after the other checks pass, contact Brevo support and ask them to activate transactional email.');
+  } else {
+    add('Email sending is activated on the Brevo account', true, 'No activation problem found.');
+  }
+
+  if (from) {
+    try {
+      const list = await brevoCall('GET', '/v3/senders');
+      const match = (list.senders || []).find((x) => String(x.email).toLowerCase() === from.toLowerCase());
+      if (!match) {
+        add('The sender address is registered in Brevo', false, `${from} is not in your Brevo senders. Add and verify it under Brevo > Senders, Domains & Dedicated IPs.`);
+      } else if (match.active === false) {
+        add('The sender address is verified in Brevo', false, `${from} is registered but not verified yet. Open the verification email Brevo sent to that address and click the link.`);
+      } else {
+        add('The sender address is verified in Brevo', true, `${from} is verified.`);
+      }
+      if (/@(gmail|yahoo|outlook|hotmail)\./i.test(from)) {
+        add('The sender uses your own domain', false, 'Free addresses like Gmail or Yahoo are often rejected or sent to spam. Use an address on your own domain, for example noreply@yourdomain.com.');
+      }
+    } catch (e) {
+      add('The sender address is verified in Brevo', false, e.message);
+    }
+  }
+  return checks;
+}
+
+module.exports = { checkEmailSetup, sendDoctorAppointmentAlert, sendPatientConfirmation, sendTestEmail, esc };

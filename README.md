@@ -25,3 +25,6 @@ See `.env.example`. Never commit `.env`.
 - **Doctor:** every new booking (alert to the doctor's saved email, optional copy to `APPOINTMENT_CC_EMAIL`).
 - **Patient:** when the front desk sets an appointment to **confirmed**, the patient is emailed the date, time and doctor. Optional env: `HOSPITAL_PHONE`, `HOSPITAL_ADDRESS`, `HOSPITAL_REPLY_TO`.
 - Admin > Doctors has a **test email** button per doctor, and any failure shows Brevo's reason in Notifications.
+
+## Email trouble?
+Admin > Doctors > **Check email setup** tests the Brevo key, the sender address and account activation, and says which step is broken. The mail icon on a doctor card sends that doctor a test message.
